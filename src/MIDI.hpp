@@ -828,301 +828,198 @@ inline bool MidiInterface<Transport, Settings, Platform>::read(Channel inChannel
 
 // Private method: MIDI parser
 template<class Transport, class Settings, class Platform>
-bool MidiInterface<Transport, Settings, Platform>::parse()
-{
-    if (mTransport.available() == 0)
-        return false; // No data available.
+bool MidiInterface<Transport, Settings, Platform>::parse() {
 
-    // clear the ErrorParse bit
-    mLastError &= ~(1UL << ErrorParse);
+  if (mTransport.available() == 0)
+    return false;
 
-    // Parsing algorithm:
-    // Get a byte from the serial buffer.
-    // If there is no pending message to be recomposed, start a new one.
-    //  - Find type and channel (if pertinent)
-    //  - Look for other bytes in buffer, call parser recursively,
-    //    until the message is assembled or the buffer is empty.
-    // Else, add the extracted byte to the pending message, and check validity.
-    // When the message is done, store it.
+  mLastError &= ~(1UL << ErrorParse);  // Clear ErrorParse bit
+  /*Possible Errors:
+      > SysEx Stop byte received with no pending SysEx Start.
+      > Unsupported Status byte.
+      > Data received without a valid Status byte or Running Status.
+      > Warning SysEx split warning.
+      .... could potentially add an error for when SysEx is aborted due to receiving a new non-realtime status byte. 
+  */
 
-    const byte extracted = mTransport.read();
+  const byte extracted = mTransport.read();
 
-    // Ignore Undefined
-    if (extracted == Undefined_FD)
-        return (Settings::Use1ByteParsing) ? false : parse();
-
-    if (mPendingMessageIndex == 0)
-    {
-        // Start a new pending message
+  if (extracted >= 0x80) {
+    // Lets try get a valid Status byte. Non-realtime status overides any current Status
+    const MidiType pendingType = getTypeFromStatusByte(extracted);
+    switch (pendingType) {
+      // Realtime
+      case Start:
+      case Continue:
+      case Stop:
+      case Clock:
+      case Tick:
+      case ActiveSensing:
+      case SystemReset:
+      case TuneRequest:
+        // Handle message now
+        mMessage.type = pendingType;
+        mMessage.channel = 0;
+        mMessage.data1 = 0;
+        mMessage.data2 = 0;
+        mMessage.length = 1;
+        mMessage.valid = true;
+        return true;
+        break;
+        // 2 byte messages
+      case ProgramChange:
+      case AfterTouchChannel:
+      case TimeCodeQuarterFrame:
+      case SongSelect:
         mPendingMessage[0] = extracted;
-
-        // Check for running status first
-        if (isChannelMessage(getTypeFromStatusByte(mRunningStatus_RX)))
-        {
-            // Only these types allow Running Status
-
-            // If the status byte is not received, prepend it
-            // to the pending message
-            if (extracted < 0x80)
-            {
-                mPendingMessage[0]   = mRunningStatus_RX;
-                mPendingMessage[1]   = extracted;
-                mPendingMessageIndex = 1;
-            }
-            // Else: well, we received another status byte,
-            // so the running status does not apply here.
-            // It will be updated upon completion of this message.
-        }
-
-        const MidiType pendingType = getTypeFromStatusByte(mPendingMessage[0]);
-
-        switch (pendingType)
-        {
-            // 1 byte messages
-            case Start:
-            case Continue:
-            case Stop:
-            case Clock:
-            case Tick:
-            case ActiveSensing:
-            case SystemReset:
-            case TuneRequest:
-                // Handle the message type directly here.
-                mMessage.type    = pendingType;
-                mMessage.channel = 0;
-                mMessage.data1   = 0;
-                mMessage.data2   = 0;
-                mMessage.valid   = true;
-
-                // Do not reset all input attributes, Running Status must remain unchanged.
-                // We still need to reset these
-                mPendingMessageIndex = 0;
-                mPendingMessageExpectedLength = 0;
-
-                return true;
-                break;
-
-            // 2 bytes messages
-            case ProgramChange:
-            case AfterTouchChannel:
-            case TimeCodeQuarterFrame:
-            case SongSelect:
-                mPendingMessageExpectedLength = 2;
-                break;
-
-            // 3 bytes messages
-            case NoteOn:
-            case NoteOff:
-            case ControlChange:
-            case PitchBend:
-            case AfterTouchPoly:
-            case SongPosition:
-                mPendingMessageExpectedLength = 3;
-                break;
-
-            case SystemExclusiveStart:
-            case SystemExclusiveEnd:
-                // The message can be any length
-                // between 3 and MidiMessage::sSysExMaxSize bytes
-                mPendingMessageExpectedLength = MidiMessage::sSysExMaxSize;
-                mRunningStatus_RX = InvalidType;
-                mMessage.sysexArray[0] = pendingType;
-                break;
-
-            case InvalidType:
-            default:
-                // This is obviously wrong. Let's get the hell out'a here.
-                mLastError |= 1UL << ErrorParse; // set the ErrorParse bit
-                if (mErrorCallback)
-                    mErrorCallback(mLastError); // LCOV_EXCL_LINE
-
-                resetInput();
-                return false;
-                break;
-        }
-
-        if (mPendingMessageIndex >= (mPendingMessageExpectedLength - 1))
-        {
-            // Reception complete
-            mMessage.type    = pendingType;
-            mMessage.channel = getChannelFromStatusByte(mPendingMessage[0]);
-            mMessage.data1   = mPendingMessage[1];
-            mMessage.data2   = 0; // Completed new message has 1 data byte
-            mMessage.length  = 1;
-
-            mPendingMessageIndex = 0;
-            mPendingMessageExpectedLength = 0;
+        mPendingMessageExpectedLength = 2;
+        break;
+        // 3 byte messages
+      case NoteOn:
+      case NoteOff:
+      case ControlChange:
+      case PitchBend:
+      case AfterTouchPoly:
+      case SongPosition:
+        mPendingMessage[0] = extracted;
+        mPendingMessageExpectedLength = 3;
+        break;
+        // SysEx
+      case SystemExclusiveStart:
+        mPendingMessage[0] = SystemExclusive;
+        mPendingMessageExpectedLength = MidiMessage::sSysExMaxSize;
+        mMessage.sysexArray[0] = SystemExclusiveStart;
+        mLastError &= ~(1UL << WarningSplitSysEx);  // Reset Warning Split SysEx bit
+        break;
+      case SystemExclusiveEnd:
+        if (mPendingMessage[0] == SystemExclusive) {
+          mMessage.sysexArray[mPendingMessageIndex++] = SystemExclusiveEnd;  // Post Inc pending index here for correct lenght data
+          mMessage.type = SystemExclusive;
+          mMessage.data1 = mPendingMessageIndex & 0xff;      // LSB
+          mMessage.data2 = byte(mPendingMessageIndex >> 8);  // MSB
+          mMessage.channel = 0;
+          mMessage.length = mPendingMessageIndex;
+          if (mMessage.sysexArray[0] == SystemExclusiveEnd) {
+            // This is the last chunk of a split SysEx message, and is NOT a valid SysEx message (it starts with 0xF7)
+            mMessage.valid = false;  // SysEx message is split so this not technically valid
+            launchCallback();        // Lets notify callback to deal with this
+            resetInput();            // Restart message
+            return false;
+          } else {
+            // We are in a valid SysEx message that hasn't overrun (starts with 0xF0) so lets complete it
             mMessage.valid = true;
-
+            resetInput();  // Restart message
             return true;
+          }
+        } else {                            // Looks like a SysEx End without a Sysex Start
+          mLastError |= 1UL << ErrorParse;  // Error: SysEx Stop byte received with no pending SysEx Start.
+          if (mErrorCallback)
+            mErrorCallback(mLastError);
+          resetInput();  // Restart message
+          return false;
         }
-        else
-        {
-            // Waiting for more data
-            mPendingMessageIndex++;
-        }
-
-        return (Settings::Use1ByteParsing) ? false : parse();
+        break;
+      // Unsupported
+      default:
+        mPendingMessage[0] = InvalidType;
+        mLastError |= 1UL << ErrorParse;  // Error: Unsupported Status byte.
+        if (mErrorCallback)
+          mErrorCallback(mLastError);
+        resetInput();  // Restart message
+        return false;
+        break;
     }
+    mPendingMessageIndex = 1;         // If we are here, we have a valid Status! Lets try get some Data for it....
+    mRunningStatus_RX = InvalidType;  // Lets also reset Running Status until we have a complete message
+    return (Settings::Use1ByteParsing) ? false : parse();
+
+  } else {
+    // Lets get some data... First off.. check for Status Byte, or use Running Status
+    if (mPendingMessageIndex == 0) {
+      if (mRunningStatus_RX) {
+        // Yay! We have Running Status
+        mPendingMessage[0] = mRunningStatus_RX;
+        mPendingMessageIndex = 1;
+      } else {
+        // ooops.... No Status Byte... No Running Status... lets ignore this data
+        mLastError |= 1UL << ErrorParse;  // Error: Data received without a valid Status byte or Running Status.
+        if (mErrorCallback)
+          mErrorCallback(mLastError);
+        return false;
+      }
+    }
+
+    // Status or Running Status is good so add extracted data byte to pending message
+    if (mPendingMessage[0] == SystemExclusive)
+      mMessage.sysexArray[mPendingMessageIndex] = extracted;
     else
-    {
-        // First, test if this is a status byte
-        if (extracted >= 0x80)
-        {
-            // Reception of status bytes in the middle of an uncompleted message
-            // are allowed only for interleaved Real Time message or EOX
-            switch (extracted)
-            {
-                case Clock:
-                case Start:
-                case Tick:
-                case Continue:
-                case Stop:
-                case ActiveSensing:
-                case SystemReset:
+      mPendingMessage[mPendingMessageIndex] = extracted;
 
-                    // Here we will have to extract the one-byte message,
-                    // pass it to the structure for being read outside
-                    // the MIDI class, and recompose the message it was
-                    // interleaved into. Oh, and without killing the running status..
-                    // This is done by leaving the pending message as is,
-                    // it will be completed on next calls.
-
-                    mMessage.type    = (MidiType)extracted;
-                    mMessage.data1   = 0;
-                    mMessage.data2   = 0;
-                    mMessage.channel = 0;
-                    mMessage.length  = 1;
-                    mMessage.valid   = true;
-
-                    return true;
-
-                    // Exclusive
-                case SystemExclusiveStart:
-                case SystemExclusiveEnd:
-                    if ((mMessage.sysexArray[0] == SystemExclusiveStart)
-                    ||  (mMessage.sysexArray[0] == SystemExclusiveEnd))
-                    {
-                        // Store the last byte (EOX)
-                        mMessage.sysexArray[mPendingMessageIndex++] = extracted;
-                        mMessage.type = SystemExclusive;
-
-                        // Get length
-                        mMessage.data1   = mPendingMessageIndex & 0xff; // LSB
-                        mMessage.data2   = byte(mPendingMessageIndex >> 8);   // MSB
-                        mMessage.channel = 0;
-                        mMessage.length  = mPendingMessageIndex;
-                        mMessage.valid   = true;
-
-                        resetInput();
-
-                        return true;
-                    }
-                    else
-                    {
-                        // Well well well.. error.
-                        mLastError |= 1UL << ErrorParse; // set the error bits
-                        if (mErrorCallback)
-                            mErrorCallback(mLastError); // LCOV_EXCL_LINE
-
-                        resetInput();
-                        return false;
-                    }
-                // LCOV_EXCL_START - Coverage blind spot
-                default:
-                    break;
-                // LCOV_EXCL_STOP
-            }
+    // Now we are going to check if we have reached the end of the message
+    if (mPendingMessageIndex >= (mPendingMessageExpectedLength - 1)) {
+      // SysEx larger than the allocated buffer size,
+      // Split SysEx like so:
+      //   first:  0xF0 .... 0xF0
+      //   middle: 0xF7 .... 0xF0
+      //   last:   0xF7 .... 0xF7
+      // ***** If the buffer has overrun, this SysEx message can now no longer be considered a valid Midi message and must be dealt with via callbacks only! ****
+      if (mPendingMessage[0] == SystemExclusive) {
+        // Warn at start of SysEx split
+        if (mMessage.sysexArray[0] == SystemExclusiveStart) {
+          mLastError |= 1UL << WarningSplitSysEx;  // We have this error already defined so may as well use it
+          if (mErrorCallback)
+            mErrorCallback(mLastError);
         }
+        auto lastByte = mMessage.sysexArray[Settings::SysExMaxSize - 1];
+        mMessage.sysexArray[Settings::SysExMaxSize - 1] = SystemExclusiveStart;
+        mMessage.type = SystemExclusive;
 
-        // Add extracted data byte to pending message
-        if ((mPendingMessage[0] == SystemExclusiveStart)
-        ||  (mPendingMessage[0] == SystemExclusiveEnd))
-            mMessage.sysexArray[mPendingMessageIndex] = extracted;
-        else
-            mPendingMessage[mPendingMessageIndex] = extracted;
+        // Get length
+        mMessage.data1 = Settings::SysExMaxSize & 0xff;      // LSB
+        mMessage.data2 = byte(Settings::SysExMaxSize >> 8);  // MSB
+        mMessage.channel = 0;
+        mMessage.length = Settings::SysExMaxSize;
+        mMessage.valid = false;  // SysEx message is split so this is not technically valid
 
-        // Now we are going to check if we have reached the end of the message
-        if (mPendingMessageIndex >= (mPendingMessageExpectedLength - 1))
-        {
-            // SysEx larger than the allocated buffer size,
-            // Split SysEx like so:
-            //   first:  0xF0 .... 0xF0
-            //   midlle: 0xF7 .... 0xF0
-            //   last:   0xF7 .... 0xF7
-            if ((mPendingMessage[0] == SystemExclusiveStart)
-            ||  (mPendingMessage[0] == SystemExclusiveEnd))
-            {
-                auto lastByte = mMessage.sysexArray[Settings::SysExMaxSize - 1];
-                mMessage.sysexArray[Settings::SysExMaxSize - 1] = SystemExclusiveStart;
-                mMessage.type = SystemExclusive;
+        // Notify callback to deal with the SysEx data chunk
+        launchCallback();
 
-                // Get length
-                mMessage.data1   = Settings::SysExMaxSize & 0xff; // LSB
-                mMessage.data2   = byte(Settings::SysExMaxSize >> 8); // MSB
-                mMessage.channel = 0;
-                mMessage.length  = Settings::SysExMaxSize;
-                mMessage.valid   = true;
+        // Prep next SysEx data chunk to start with 0xF7
+        mMessage.sysexArray[0] = SystemExclusiveEnd;
+        mMessage.sysexArray[1] = lastByte;
+        mPendingMessageIndex = 2;
+        // SysEx buffer has overrun so parse() will no longer return true, and will need to be dealt with via callbacks only
+        return false;
+      }
 
-                // No need to check against the inputChannel,
-                // SysEx ignores input channel
-                launchCallback();
+      // Pending message is complete so lets save it
+      mMessage.type = getTypeFromStatusByte(mPendingMessage[0]);
 
-                mMessage.sysexArray[0] = SystemExclusiveEnd;
-                mMessage.sysexArray[1] = lastByte;
+      if (isChannelMessage(mMessage.type)) {
+        mMessage.channel = getChannelFromStatusByte(mPendingMessage[0]);
+        // Message will be completed soon so lets update RunningStatus now as this is obviously a valid Channel Message.
+        mRunningStatus_RX = mPendingMessage[0];
+      } else
+        mMessage.channel = 0;
 
-                mPendingMessageIndex = 2;
+      mMessage.data1 = mPendingMessage[1];
+      // Save data2 only if applicable
+      mMessage.data2 = mPendingMessageExpectedLength == 3 ? mPendingMessage[2] : 0;
+      mMessage.length = mPendingMessageExpectedLength;
+      mMessage.valid = true;
 
-                return false;
-            }
+      // Reset index for next message
+      mPendingMessageIndex = 0;
+      //mPendingMessageExpectedLength = 0; // <-- No need to reset this as its valid still for Running Status, or will be updated on next Status byte received.
 
-            mMessage.type = getTypeFromStatusByte(mPendingMessage[0]);
+      return true;
+    } else {
+      // We need more data...
+      mPendingMessageIndex++;
 
-            if (isChannelMessage(mMessage.type))
-                mMessage.channel = getChannelFromStatusByte(mPendingMessage[0]);
-            else
-                mMessage.channel = 0;
-
-            mMessage.data1 = mPendingMessage[1];
-            // Save data2 only if applicable
-            mMessage.data2 = mPendingMessageExpectedLength == 3 ? mPendingMessage[2] : 0;
-            mMessage.length = mPendingMessageExpectedLength;
-
-            // Reset local variables
-            mPendingMessageIndex = 0;
-            mPendingMessageExpectedLength = 0;
-
-            mMessage.valid = true;
-
-            // Activate running status (if enabled for the received type)
-            switch (mMessage.type)
-            {
-                case NoteOff:
-                case NoteOn:
-                case AfterTouchPoly:
-                case ControlChange:
-                case ProgramChange:
-                case AfterTouchChannel:
-                case PitchBend:
-                    // Running status enabled: store it from received message
-                    mRunningStatus_RX = mPendingMessage[0];
-                    break;
-
-                default:
-                    // No running status
-                    mRunningStatus_RX = InvalidType;
-                    break;
-            }
-            return true;
-        }
-        else
-        {
-            // Then update the index of the pending message.
-            mPendingMessageIndex++;
-
-            return (Settings::Use1ByteParsing) ? false : parse();
-        }
+      return (Settings::Use1ByteParsing) ? false : parse();
     }
+  }
 }
 
 // Private method, see midi_Settings.h for documentation
