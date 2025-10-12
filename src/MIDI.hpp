@@ -893,26 +893,20 @@ bool MidiInterface<Transport, Settings, Platform>::parse()
                 if (mErrorCallback)
                     mErrorCallback(mLastError);
                 if ((pendingType != Undefined_F9) && (pendingType != Undefined_FD)) {  // Dont reset for 0xFD & 0xF9 (Undefined Realtime)
-                    resetInput();                                                      // Input reset for stray EOX and Undefined common F4/F5
+                    mPendingMessageIndex = 0;                                          // Message reset for stray EOX and Undefined common F4/F5
                 }
                 return false;
         }
-        mRunningStatus_RX = InvalidType;                                // Reset Running Status until valid channel message complete
         mPendingMessage[0] = extracted;                                 // Status seems good so lets store in pending
         if (extracted != SystemExclusiveEnd) mPendingMessageIndex = 1;  // Set PendingMessageIndex to 1 (needs to be unchanged for EOX)
 
     } else {
         // Check Status
         if (mPendingMessageIndex == 0) {
-            if (mRunningStatus_RX) {
-                mPendingMessage[0] = mRunningStatus_RX;
-                mPendingMessageIndex = 1;
-            } else {
-                mLastError |= 1UL << ErrorParse;  // Error: No Status
-                if (mErrorCallback)
-                    mErrorCallback(mLastError);
-                return false;
-            }
+            mLastError |= 1UL << ErrorParse;  // Error: No Status
+            if (mErrorCallback)
+                mErrorCallback(mLastError);
+            return false;
         }
         // Add Data
         if (mPendingMessage[0] == SystemExclusive)
@@ -953,8 +947,8 @@ bool MidiInterface<Transport, Settings, Platform>::parse()
                     if (mErrorCallback)
                         mErrorCallback(1UL << WarningSplitSysEx);  // Notify but no need to store this warning?
                 }
-                byte lastByte = mMessage.sysexArray[Settings::SysExMaxSize - 1];         // <--- change from Settings::SysExMaxSize to mPendingMessageIndex?
-                mMessage.sysexArray[Settings::SysExMaxSize - 1] = SystemExclusiveStart;  // <--- change from Settings::SysExMaxSize to mPendingMessageIndex?
+                byte lastByte = mMessage.sysexArray[Settings::SysExMaxSize - 1];
+                mMessage.sysexArray[Settings::SysExMaxSize - 1] = SystemExclusiveStart;
                 mMessage.valid = false;
                 launchCallback();
 
@@ -968,19 +962,19 @@ bool MidiInterface<Transport, Settings, Platform>::parse()
         }
 
         // Process message
-        mMessage.type = getTypeFromStatusByte(mPendingMessage[0]);
-        if (isChannelMessage(mMessage.type)) {
+        if (mPendingMessage[0] < 0xF0) {  // Channel message
+            mMessage.type = MidiType(mPendingMessage[0] & 0xF0);
             mMessage.channel = (mPendingMessage[0] & 0x0F) + 1;
-            mRunningStatus_RX = mPendingMessage[0];
-        } else
+            mPendingMessageIndex = 1;  // Set to 1 for running status
+        } else {                       // Common message
+            mMessage.type = MidiType(mPendingMessage[0]);
             mMessage.channel = 0;
+            mPendingMessageIndex = 0;
+        }
         mMessage.data1 = mPendingMessage[1];
         mMessage.data2 = mPendingMessage[2];
         mMessage.length = mPendingMessageExpectedLength;
         mMessage.valid = true;
-
-        // Reset index for next message
-        mPendingMessageIndex = 0;
 
         return true;
     } else {
