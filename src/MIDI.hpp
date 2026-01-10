@@ -47,8 +47,10 @@ inline MidiInterface<Transport, Settings, Platform>::MidiInterface(Transport& in
     , mSenderActiveSensingPeriodicity(0)
     , mReceiverActiveSensingActivated(false)
     , mLastError(0)
+    , mConvertedNoteOffVelocity(0)
 {
     mSenderActiveSensingPeriodicity = Settings::SenderActiveSensingPeriodicity;
+    mConvertNullVelocityToNoteOff = Settings::HandleNullVelocityNoteOnAsNoteOff;
 }
 
 /*! \brief Destructor for MidiInterface.
@@ -983,14 +985,26 @@ bool MidiInterface<Transport, Settings, Platform>::parse()
     }
 }
 
+/*! \brief Convert Note On Velocity 0 events to Note off (default behaviour).
+ \param convert - Sets whether Note On Velocity 0 is converted to a Note Off (default = true).
+ \param off_velocity - Optionally sets the Release Velocity (0-127) of the converted Note Off (default = 0). 
+*/
+template<class Transport, class Settings, class Platform>
+inline void MidiInterface<Transport, Settings, Platform>::convertNullVelocityNoteOnToNoteOff(bool convert, uint8_t off_velocity)
+{
+    mConvertNullVelocityToNoteOff = convert;
+    if (convert) mConvertedNoteOffVelocity = off_velocity & 0x7F;
+}
+
 // Private method, see midi_Settings.h for documentation
 template<class Transport, class Settings, class Platform>
 inline void MidiInterface<Transport, Settings, Platform>::handleNullVelocityNoteOnAsNoteOff()
 {
-    if (Settings::HandleNullVelocityNoteOnAsNoteOff &&
+    if (mConvertNullVelocityToNoteOff &&
         getType() == NoteOn && getData2() == 0)
     {
         mMessage.type = NoteOff;
+        mMessage.data2 = mConvertedNoteOffVelocity;
     }
 }
 

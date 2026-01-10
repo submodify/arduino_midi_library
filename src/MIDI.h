@@ -248,6 +248,8 @@ private:
 
     // -------------------------------------------------------------------------
     // MIDI Parsing
+public:
+	inline void convertNullVelocityNoteOnToNoteOff(bool convert, uint8_t off_velocity = 0);																						
 
 private:
     bool parse();
@@ -285,6 +287,8 @@ private:
     unsigned long   mSenderActiveSensingPeriodicity;
     bool            mReceiverActiveSensingActivated;
     int8_t          mLastError;
+	bool            mConvertNullVelocityToNoteOff;
+    uint8_t         mConvertedNoteOffVelocity;											  
 
 private:
     inline StatusByte getStatus(MidiType inType,
