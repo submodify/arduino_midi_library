@@ -901,8 +901,12 @@ bool MidiInterface<Transport, Settings, Platform>::parse()
                 }
                 return false;
         }
-        mPendingMessage[0] = extracted;                                 // Status seems good so lets store in pending
-        if (extracted != SystemExclusiveEnd) mPendingMessageIndex = 1;  // Set PendingMessageIndex to 1 (needs to be unchanged for EOX)
+        if (extracted != SystemExclusiveEnd) {
+            mPendingMessageIndex = 1;                                         // Set PendingMessageIndex to 1 (needs to be unchanged for EOX)
+            if((mPendingMessage[0] == SystemExclusiveStart) && mErrorCallback)
+                mErrorCallback(1UL << ErrorSysEx);                            // SysEx Interupted
+        }
+        mPendingMessage[0] = extracted;                                       // Status seems good so lets store in pending
 
     } else {
         // Check Status
