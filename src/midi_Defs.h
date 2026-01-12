@@ -87,6 +87,7 @@ using ContinueCallback             = void (*)(void);
 using StopCallback                 = void (*)(void);
 using ActiveSensingCallback        = void (*)(void);
 using SystemResetCallback          = void (*)(void);
+using SystemExclusiveByteCallback  = void (*)(byte data);
 
 // -----------------------------------------------------------------------------
 

@@ -204,6 +204,7 @@ public:
     inline MidiInterface& setHandleStop(StopCallback fptr) { mStopCallback = fptr; return *this; };
     inline MidiInterface& setHandleActiveSensing(ActiveSensingCallback fptr) { mActiveSensingCallback = fptr; return *this; };
     inline MidiInterface& setHandleSystemReset(SystemResetCallback fptr) { mSystemResetCallback = fptr; return *this; };
+    inline MidiInterface& setHandleSystemExclusiveByte(SystemExclusiveByteCallback fptr) { mSystemExclusiveByteCallback = fptr; return *this; };
 
     inline MidiInterface& disconnectCallbackFromType(MidiType inType);
 
@@ -231,6 +232,7 @@ private:
     StopCallback mStopCallback = nullptr;
     ActiveSensingCallback mActiveSensingCallback = nullptr;
     SystemResetCallback mSystemResetCallback = nullptr;
+    SystemExclusiveByteCallback mSystemExclusiveByteCallback = nullptr;
 
     // -------------------------------------------------------------------------
     // MIDI Soft Thru

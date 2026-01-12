@@ -884,10 +884,12 @@ bool MidiInterface<Transport, Settings, Platform>::parse()
             case SystemExclusiveStart:
                 mPendingMessageExpectedLength = MidiMessage::sSysExMaxSize;
                 mMessage.sysexArray[0] = SystemExclusiveStart;
+                if (mSystemExclusiveByteCallback) mSystemExclusiveByteCallback(extracted);
                 break;
             case SystemExclusiveEnd:
                 if (mPendingMessage[0] == SystemExclusiveStart) {            // If were currently doing SysEx
                     mPendingMessageExpectedLength = ++mPendingMessageIndex;  // Update expected lenght as we have an EOX and within Buffer
+                    if (mSystemExclusiveByteCallback) mSystemExclusiveByteCallback(extracted);
                     break;
                 }
             default:
@@ -911,8 +913,10 @@ bool MidiInterface<Transport, Settings, Platform>::parse()
             return false;
         }
         // Add Data
-        if (mPendingMessage[0] == SystemExclusive)
+        if (mPendingMessage[0] == SystemExclusive) {
             mMessage.sysexArray[mPendingMessageIndex] = extracted;
+            if (mSystemExclusiveByteCallback) mSystemExclusiveByteCallback(extracted);
+        }
         else
             mPendingMessage[mPendingMessageIndex] = extracted;
         mPendingMessageIndex++;
